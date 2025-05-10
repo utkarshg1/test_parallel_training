@@ -12,9 +12,11 @@ from sklearn.ensemble import (
     GradientBoostingClassifier,
     HistGradientBoostingClassifier,
 )
+from sklearn.metrics import f1_score
 from xgboost import XGBClassifier
 import pandas as pd
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, parallel_backend
+from typing import Literal
 
 
 def download_file(url: str):
@@ -48,8 +50,8 @@ def get_models() -> list:
     return [
         LogisticRegression(),
         DecisionTreeClassifier(),
-        RandomForestClassifier(),
-        GradientBoostingClassifier(),
+        # RandomForestClassifier(),
+        # GradientBoostingClassifier(),
         HistGradientBoostingClassifier(),
         XGBClassifier(),
     ]
@@ -58,22 +60,26 @@ def get_models() -> list:
 def evaluate_model(model, xtrain, ytrain, xtest, ytest, n_jobs=-1):
     start = time.perf_counter()
     model.fit(xtrain, ytrain)
-    train_score = model.score(xtrain, ytrain)
-    test_score = model.score(xtest, ytest)
+    ypred_train = model.predict(xtrain)
+    ypred_test = model.predict(xtest)
+    train_score = f1_score(ytrain, ypred_train, average="macro")
+    test_score = f1_score(ytest, ypred_test, average="macro")
     scores = cross_val_score(
         model, xtrain, ytrain, cv=5, scoring="f1_macro", n_jobs=n_jobs
     )
     stop = time.perf_counter()
     elapsed = round(stop - start, 4)
     name = type(model).__name__
-    return {
+    res = {
         "name": name,
         "model": model,
-        "train_score": train_score,
-        "test_score": test_score,
-        "cv_score": scores.mean(),
+        "train_score": round(train_score, 4),
+        "test_score": round(test_score, 4),
+        "cv_score": scores.mean().round(4),
         "model_time": elapsed,
     }
+    print(res)
+    return res
 
 
 def evaluate_multiple(models: list, xtrain, ytrain, xtest, ytest):
@@ -82,7 +88,6 @@ def evaluate_multiple(models: list, xtrain, ytrain, xtest, ytest):
     for model in models:
         r = evaluate_model(model, xtrain, ytrain, xtest, ytest)
         res.append(r)
-        print(r)
     res_df = pd.DataFrame(res)
     res_sorted = res_df.sort_values(by="cv_score", ascending=False).reset_index(
         drop=True
@@ -94,12 +99,15 @@ def evaluate_multiple(models: list, xtrain, ytrain, xtest, ytest):
     return best_model, res_sorted
 
 
-def evaluate_parallel(models: list, xtrain, ytrain, xtest, ytest):
+def evaluate_parallel(
+    models: list, backend: Literal["threading", "loky"], xtrain, ytrain, xtest, ytest
+):
     start = time.perf_counter()
-    results = Parallel(n_jobs=-1)(
-        delayed(evaluate_model)(model, xtrain, ytrain, xtest, ytest, n_jobs=1)
-        for model in models
-    )
+    with parallel_backend(backend, n_jobs=-1):
+        results = Parallel()(
+            delayed(evaluate_model)(model, xtrain, ytrain, xtest, ytest, n_jobs=1)
+            for model in models
+        )
     res_df = pd.DataFrame(results)
     res_sorted = res_df.sort_values(by="cv_score", ascending=False).reset_index(
         drop=True
